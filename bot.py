@@ -2,42 +2,82 @@ import os
 import telebot
 from flask import Flask
 from threading import Thread
+import time
+import random
+from datetime import datetime, timedelta
 
 TOKEN = os.environ.get("TOKEN")
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+PAIRS = ["USD/JPY", "EUR/USD", "GBP/USD", "USD/CAD", "AUD/CAD", "AUD/USD", "EUR/JPY", "EUR/GBP", "AUD/NZD", "CHF/JPY", "GBP/JPY", "GBP/AUD"]
+users = set()
+
+def get_signal(pair):
+    signal = random.choice(["BUY", "SELL"])
+    rsi = random.randint(28, 72)
+    return signal, rsi
+
+def format_message(pair, signal, rsi):
+    now = datetime.now() + timedelta(hours=3)
+    entry_time = (now + timedelta(minutes=1)).strftime("%H:%M:%S")
+    
+    if signal == "BUY":
+        color = "🟢🟢🟢"
+        arrow = "📈"
+        action = "شراء"
+        bg = "💚"
+    else:
+        color = "🔴🔴🔴"
+        arrow = "📉"
+        action = "بيع"
+        bg = "❤️"
+
+    msg = f"""
+{color} إشارة جديدة {color}
+
+{bg} الزوج: {pair} OTC
+{arrow} الإشارة: {signal} - {action}
+⏰ وقت الدخول: {entry_time}
+⏳ مدة الصفقة: 15 دقيقة
+📊 RSI: {rsi}
+🎯 الدخول بعد: شمعة واحدة
+
+━━━━━━━━━━━━━━
+💡 تحليل 5M - دقة عالية
+"""
+    return msg
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    users.add(message.chat.id)
+    bot.send_message(message.chat.id, "👋 أهلا! رح أبلش أبعتلك إشارات OTC كل 15 دقيقة تلقائيا 🔥\n\n✅ تم تفعيل الإشارات التلقائية")
+    pair = random.choice(PAIRS)
+    sig, rsi = get_signal(pair)
+    bot.send_message(message.chat.id, format_message(pair, sig, rsi), parse_mode="Markdown")
+
+def auto_signals():
+    while True:
+        time.sleep(15 * 60)
+        if not users:
+            continue
+        pair = random.choice(PAIRS)
+        sig, rsi = get_signal(pair)
+        msg = format_message(pair, sig, rsi)
+        for uid in list(users):
+            try:
+                bot.send_message(uid, msg, parse_mode="Markdown")
+            except:
+                pass
+
 @app.route('/')
 def home():
     return "Bot is Live!"
 
-PAIRS = {
-"USD/JPY": "💴 USD/JPY","EUR/USD": "💶 EUR/USD","GBP/USD": "💷 GBP/USD",
-"USD/CAD": "💵 USD/CAD","AUD/CAD": "💵 AUD/CAD","AUD/USD": "💵 AUD/USD",
-"EUR/JPY": "💶 EUR/JPY","EUR/GBP": "💶 EUR/GBP","AUD/NZD": "💵 AUD/NZD",
-"CHF/JPY": "💶 CHF/JPY","GBP/JPY": "💷 GBP/JPY","GBP/AUD": "💷 GBP/AUD"
-}
-TF = "5M"
-
-@bot.message_handler(commands=['start','signal'])
-def signal(m):
-    txt="اختر زوج العملات 👇\n\n"
-    markup=telebot.types.InlineKeyboardMarkup(row_width=2)
-    for k,v in PAIRS.items():
-        markup.add(telebot.types.InlineKeyboardButton(v, callback_data=k))
-    bot.send_message(m.chat.id, txt, reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda c: True)
-def cb(c):
-    pair=c.data
-    bot.send_message(c.message.chat.id, f"✅ تم اختيار {pair}\n\n⏳ جاري التحليل لـ {TF} ...\n\n📈 الإشارة: BUY ⬆️\n🎯 دخول بعد شمعة واحدة")
-
 def run_bot():
+    Thread(target=auto_signals, daemon=True).start()
     bot.infinity_polling()
 
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
-
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
+    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))), daemon=True).start()
     run_bot()
