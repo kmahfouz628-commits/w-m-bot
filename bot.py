@@ -1,1 +1,3 @@
-
+print("OTC SIGNAL BOT STARTED")
+print("M1 - 3 MIN EXPIRY")
+print("DEMO ONLY - NO AUTOMATIC TRADES")
