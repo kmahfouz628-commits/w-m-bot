@@ -9,6 +9,7 @@ import store
 from strategy import signal
 from po_source import PocketOptionFeed
 
+
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -42,6 +43,7 @@ def check_pending(feed):
         now = datetime.now(timezone.utc).timestamp()
 
         for row_id, symbol, signal_time, direction, entry, expiry in rows:
+
             if now < expiry:
                 continue
 
@@ -78,9 +80,19 @@ def check_pending(feed):
             )
 
             if result_close > entry:
-                result = "WIN" if direction == "CALL" else "LOSS"
+                result = (
+                    "WIN"
+                    if direction == "CALL"
+                    else "LOSS"
+                )
+
             elif result_close < entry:
-                result = "WIN" if direction == "PUT" else "LOSS"
+                result = (
+                    "WIN"
+                    if direction == "PUT"
+                    else "LOSS"
+                )
+
             else:
                 result = "DRAW"
 
@@ -88,7 +100,8 @@ def check_pending(feed):
 
             print(
                 f"RESULT {symbol} {direction}: "
-                f"{result} | entry={entry} | close={result_close}"
+                f"{result} | entry={entry} | "
+                f"close={result_close}"
             )
 
     except Exception as e:
@@ -96,16 +109,17 @@ def check_pending(feed):
 
 
 def success_text():
+
     w, l, d, rate = store.stats()
 
     if w + l == 0:
-        return "SUCCESS RATE: no completed results yet"
+        return "📊 نسبة النجاح: لا توجد نتائج مكتملة بعد"
 
     return (
-        f"SUCCESS RATE: {rate:.1f}% | "
-        f"WINS: {w} | "
-        f"LOSSES: {l} | "
-        f"DRAWS: {d}"
+        f"📊 نسبة النجاح: {rate:.1f}%\n"
+        f"✅ أرباح: {w}\n"
+        f"❌ خسائر: {l}\n"
+        f"➖ تعادل: {d}"
     )
 
 
@@ -130,9 +144,10 @@ def main():
     send(
         TOKEN,
         CHAT,
-        "OTC SIGNAL BOT STARTED\n"
-        "M1 - 3 MIN EXPIRY\n"
-        "DEMO ONLY - NO AUTOMATIC TRADES"
+        "🤖 تم تشغيل بوت إشارات OTC\n"
+        "🕐 فريم: دقيقة واحدة (M1)\n"
+        "⏱️ مدة الإشارة: 3 دقائق\n"
+        "🧪 تجريبي فقط — بدون تنفيذ تلقائي"
     )
 
     while True:
@@ -190,25 +205,31 @@ def main():
                 store.add(s)
 
                 if s["direction"] == "CALL":
-                    signal_title = "🟢 CALL - BUY"
-                    band = "LOWER BAND"
+
+                    signal_title = "🟢 شراء (CALL)"
+                    band = "الحد السفلي"
+
                 else:
-                    signal_title = "🔴 PUT - SELL"
-                    band = "UPPER BAND"
+
+                    signal_title = "🔴 بيع (PUT)"
+                    band = "الحد العلوي"
+
+                entry_price = s["entry"]
 
                 message = (
                     signal_title + "\n"
-                    + "PAIR: " + symbol + "\n"
-                    + "EXPIRY: 3 MINUTES\n\n"
+                    + f"💱 الزوج: {symbol.replace('_otc', ' OTC')}\n"
+                    + f"💰 سعر الدخول: {entry_price:.6f}\n"
+                    + "⏱️ مدة الإشارة: 3 دقائق\n\n"
                     + success_text() + "\n\n"
-                    + "REASON:\n"
-                    + "- Bollinger Bands: "
-                    + band + " touch/break\n"
-                    + "- Rejection candle confirmed\n"
-                    + f"- RSI(14): {s['rsi']:.1f}\n"
-                    + f"- Stochastic(5,3,3): "
-                    + f"{s['stoch_k']:.1f}\n\n"
-                    + "DEMO ONLY - NO AUTOMATIC TRADE"
+                    + "📊 سبب الإشارة:\n"
+                    + f"• بولينجر باند: لمس/كسر {band}\n"
+                    + "• شمعة رفض مؤكدة\n"
+                    + f"• RSI(14): {s['rsi']:.1f}\n"
+                    + f"• ستوكاستك (5,3,3): "
+                    + f"{s['stoch_k']:.1f}\n"
+                    + "• شمعة التأكيد أغلقت\n\n"
+                    + "🧪 تجريبي فقط — بدون تنفيذ تلقائي"
                 )
 
                 send(
@@ -219,7 +240,8 @@ def main():
 
                 print(
                     f"SIGNAL {symbol}: "
-                    f"{s['direction']}"
+                    f"{s['direction']} | "
+                    f"entry={entry_price}"
                 )
 
             except Exception as e:
