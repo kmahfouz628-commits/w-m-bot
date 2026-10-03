@@ -45,15 +45,24 @@ class PocketOptionFeed:
 
         df = df.rename(columns=rename_map)
 
-        required = ["open", "high", "low", "close"]
+        # توافق مع باقي ملفات البوت
+        if "timestamp" in df.columns:
+            df["time"] = df["timestamp"]
+
+        required = ["open", "high", "low", "close", "time"]
 
         if not all(col in df.columns for col in required):
             return pd.DataFrame()
 
-        for col in required:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
 
-        df = df.dropna(subset=required)
+        df = df.dropna(
+            subset=["open", "high", "low", "close"]
+        )
 
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_numeric(
@@ -61,9 +70,14 @@ class PocketOptionFeed:
                 errors="coerce"
             )
 
-        df = df.sort_values(
-            "timestamp" if "timestamp" in df.columns else df.index
+        df["time"] = pd.to_numeric(
+            df["time"],
+            errors="coerce"
         )
+
+        df = df.dropna(subset=["time"])
+
+        df = df.sort_values("time")
 
         return df.tail(count).reset_index(drop=True)
 
