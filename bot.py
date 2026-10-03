@@ -9,7 +9,6 @@ import store
 from strategy import signal
 from po_source import PocketOptionFeed
 
-
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -43,7 +42,6 @@ def check_pending(feed):
         now = datetime.now(timezone.utc).timestamp()
 
         for row_id, symbol, signal_time, direction, entry, expiry in rows:
-
             if now < expiry:
                 continue
 
@@ -80,19 +78,9 @@ def check_pending(feed):
             )
 
             if result_close > entry:
-                result = (
-                    "WIN"
-                    if direction == "CALL"
-                    else "LOSS"
-                )
-
+                result = "WIN" if direction == "CALL" else "LOSS"
             elif result_close < entry:
-                result = (
-                    "WIN"
-                    if direction == "PUT"
-                    else "LOSS"
-                )
-
+                result = "WIN" if direction == "PUT" else "LOSS"
             else:
                 result = "DRAW"
 
@@ -100,8 +88,7 @@ def check_pending(feed):
 
             print(
                 f"RESULT {symbol} {direction}: "
-                f"{result} | entry={entry} | "
-                f"close={result_close}"
+                f"{result} | entry={entry} | close={result_close}"
             )
 
     except Exception as e:
@@ -109,7 +96,6 @@ def check_pending(feed):
 
 
 def success_text():
-
     w, l, d, rate = store.stats()
 
     if w + l == 0:
@@ -124,6 +110,8 @@ def success_text():
 
 
 def main():
+
+    store.db()
 
     if not SSID:
         raise SystemExit(
@@ -163,7 +151,6 @@ def main():
                 if df is None or len(df) < 40:
                     continue
 
-                # نستبعد الشمعة الحالية غير المكتملة
                 closed = df.iloc[:-1].copy()
 
                 last_time = float(
