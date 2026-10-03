@@ -9,6 +9,7 @@ import store
 from strategy import signal
 from po_source import PocketOptionFeed
 
+
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -51,25 +52,47 @@ def check_pending(feed):
             if df is None or len(df) < 2:
                 continue
 
-            target_time = expiry - 60
+            target_time = float(expiry) - 60
 
-            candles = df[
-                df["time"].apply(
-                    lambda x: x.timestamp()
-                    if hasattr(x, "timestamp")
-                    else float(x)
-                ) == target_time
-            ]
+            times = df["time"].apply(
+                lambda x:
+                x.timestamp()
+                if hasattr(x, "timestamp")
+                else float(x)
+            )
 
-            if candles.empty:
+            if times.empty:
                 continue
 
-            result_close = float(candles.iloc[-1]["close"])
+            closest_index = (
+                (times - target_time).abs()
+            ).idxmin()
+
+            closest_time = float(
+                times.loc[closest_index]
+            )
+
+            if abs(closest_time - target_time) > 2:
+                continue
+
+            result_close = float(
+                df.loc[closest_index, "close"]
+            )
 
             if result_close > entry:
-                result = "WIN" if direction == "CALL" else "LOSS"
+                result = (
+                    "WIN"
+                    if direction == "CALL"
+                    else "LOSS"
+                )
+
             elif result_close < entry:
-                result = "WIN" if direction == "PUT" else "LOSS"
+                result = (
+                    "WIN"
+                    if direction == "PUT"
+                    else "LOSS"
+                )
+
             else:
                 result = "DRAW"
 
@@ -77,7 +100,8 @@ def check_pending(feed):
 
             print(
                 f"RESULT {symbol} {direction}: "
-                f"{result} | entry={entry} | close={result_close}"
+                f"{result} | entry={entry} | "
+                f"close={result_close}"
             )
 
     except Exception as e:
@@ -93,7 +117,9 @@ def success_text():
 
     return (
         f"SUCCESS RATE: {rate:.1f}% | "
-        f"WINS: {w} | LOSSES: {l} | DRAWS: {d}"
+        f"WINS: {w} | "
+        f"LOSSES: {l} | "
+        f"DRAWS: {d}"
     )
 
 
@@ -105,7 +131,11 @@ def main():
         )
 
     feed = PocketOptionFeed(SSID)
-    feed.connect()
+
+    if not feed.connect():
+        raise SystemExit(
+            "Pocket Option connection failed."
+        )
 
     seen = {}
 
@@ -133,8 +163,14 @@ def main():
                 if df is None or len(df) < 40:
                     continue
 
+                # نستبعد الشمعة الحالية غير المكتملة
                 closed = df.iloc[:-1].copy()
-                cid = str(closed.iloc[-1].time)
+
+                last_time = float(
+                    closed.iloc[-1]["time"]
+                )
+
+                cid = str(int(last_time))
 
                 if seen.get(symbol) == cid:
                     continue
@@ -146,55 +182,19 @@ def main():
                 if not s:
                     continue
 
+                signal_datetime = datetime.fromtimestamp(
+                    last_time,
+                    timezone.utc
+                )
+
                 expiry = (
-                    datetime.fromtimestamp(
-                        closed.iloc[-1].time.timestamp(),
-                        timezone.utc
-                    )
+                    signal_datetime
                     + timedelta(minutes=3)
                 )
 
+                signal_time = signal_datetime.isoformat()
+
                 s.update(
                     symbol=symbol,
-                    signal_time=cid,
-                    expiry=expiry.timestamp()
-                )
-
-                store.add(s)
-
-                if s["direction"] == "CALL":
-                    signal_title = "GREEN CALL - BUY"
-                    band = "LOWER BAND"
-                else:
-                    signal_title = "RED PUT - SELL"
-                    band = "UPPER BAND"
-
-                message = (
-                    signal_title + "\n"
-                    + "PAIR: " + symbol + "\n"
-                    + "EXPIRY: 3 MINUTES\n\n"
-                    + success_text() + "\n\n"
-                    + "REASON:\n"
-                    + "- Bollinger Bands: " + band + "\n"
-                    + "- Rejection candle confirmed\n"
-                    + f"- RSI(14): {s['rsi']:.1f}\n"
-                    + f"- Stochastic(5,3,3): {s['stoch_k']:.1f}\n\n"
-                    + "DEMO ONLY - NO AUTOMATIC TRADE"
-                )
-
-                send(TOKEN, CHAT, message)
-
-                print(
-                    f"SIGNAL {symbol}: {s['direction']}"
-                )
-
-            except Exception as e:
-                print(
-                    f"Symbol error {symbol}: {e}"
-                )
-
-        time.sleep(POLL)
-
-
-if __name__ == "__main__":
-    main()
+                    signal_time=signal_time,
+                    expiry
