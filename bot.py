@@ -197,4 +197,52 @@ def main():
                 s.update(
                     symbol=symbol,
                     signal_time=signal_time,
-                    expiry
+                    expiry=expiry.timestamp()
+                )
+
+                store.add(s)
+
+                if s["direction"] == "CALL":
+                    signal_title = "🟢 CALL - BUY"
+                    band = "LOWER BAND"
+                else:
+                    signal_title = "🔴 PUT - SELL"
+                    band = "UPPER BAND"
+
+                message = (
+                    signal_title + "\n"
+                    + "PAIR: " + symbol + "\n"
+                    + "EXPIRY: 3 MINUTES\n\n"
+                    + success_text() + "\n\n"
+                    + "REASON:\n"
+                    + "- Bollinger Bands: "
+                    + band + " touch/break\n"
+                    + "- Rejection candle confirmed\n"
+                    + f"- RSI(14): {s['rsi']:.1f}\n"
+                    + f"- Stochastic(5,3,3): "
+                    + f"{s['stoch_k']:.1f}\n\n"
+                    + "DEMO ONLY - NO AUTOMATIC TRADE"
+                )
+
+                send(
+                    TOKEN,
+                    CHAT,
+                    message
+                )
+
+                print(
+                    f"SIGNAL {symbol}: "
+                    f"{s['direction']}"
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Symbol error {symbol}: {e}"
+                )
+
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()
