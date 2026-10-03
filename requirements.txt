@@ -2,8 +2,6 @@ pandas>=2.2
 numpy>=2.0
 requests>=2.32
 python-dotenv>=1.0
-websocket-client>=1.8
-websockets>=12
 tzlocal
 backoff
 git+https://github.com/chema-creator/PocketOptionApi.git
