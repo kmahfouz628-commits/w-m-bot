@@ -28,6 +28,9 @@ SYMBOLS = [
 MAX = int(os.getenv("MAX_SIGNALS_PER_DAY", "4"))
 POLL = int(os.getenv("POLL_SECONDS", "5"))
 
+# إرسال رسالة عدم وجود فرصة كل 5 دقائق
+NO_SIGNAL_INTERVAL = 300
+
 
 def check_pending(feed):
     try:
@@ -123,6 +126,43 @@ def success_text():
     )
 
 
+def test_pocket_option(feed):
+    """
+    فحص فعلي:
+    1) الاتصال بـ Pocket Option
+    2) محاولة الحصول على شموع OTC
+    """
+
+    try:
+        if not feed.connect():
+            return False, "🔴 Pocket Option: فشل الاتصال"
+
+        test_symbol = SYMBOLS[0]
+
+        df = feed.candles_m1(test_symbol, 10)
+
+        if df is None or len(df) == 0:
+            return (
+                False,
+                "🟡 Pocket Option: متصل، لكن لم تصل بيانات OTC"
+            )
+
+        return (
+            True,
+            "🟢 Pocket Option: متصل\n"
+            f"🟢 بيانات OTC: تصل بشكل طبيعي\n"
+            f"💱 اختبار البيانات: {test_symbol}\n"
+            f"📊 عدد الشموع المستلمة: {len(df)}"
+        )
+
+    except Exception as e:
+        return (
+            False,
+            "🔴 فشل فحص Pocket Option\n"
+            f"❌ الخطأ: {e}"
+        )
+
+
 def main():
 
     store.db()
@@ -134,12 +174,23 @@ def main():
 
     feed = PocketOptionFeed(SSID)
 
-    if not feed.connect():
-        raise SystemExit(
-            "Pocket Option connection failed."
+    # فحص Pocket Option وبيانات OTC قبل بدء البحث
+    connection_ok, connection_message = test_pocket_option(feed)
+
+    print(connection_message)
+
+    if not connection_ok:
+        send(
+            TOKEN,
+            CHAT,
+            connection_message
+            + "\n\n"
+            + "⚠️ البوت لن يبدأ البحث عن الإشارات حتى يتم التأكد من البيانات."
         )
 
-    seen = {}
+        raise SystemExit(
+            "Pocket Option connection/data test failed."
+        )
 
     send(
         TOKEN,
@@ -147,8 +198,14 @@ def main():
         "🤖 تم تشغيل بوت إشارات OTC\n"
         "🕐 فريم: دقيقة واحدة (M1)\n"
         "⏱️ مدة الإشارة: 3 دقائق\n"
-        "🧪 تجريبي فقط — بدون تنفيذ تلقائي"
+        "🧪 تجريبي فقط — بدون تنفيذ تلقائي\n\n"
+        + connection_message
     )
+
+    seen = {}
+
+    # وقت آخر رسالة "لا توجد فرصة"
+    last_no_signal_message = time.time()
 
     while True:
 
@@ -157,6 +214,8 @@ def main():
         if store.today_count() >= MAX:
             time.sleep(30)
             continue
+
+        found_signal = False
 
         for symbol in SYMBOLS:
 
@@ -183,6 +242,8 @@ def main():
 
                 if not s:
                     continue
+
+                found_signal = True
 
                 signal_datetime = datetime.fromtimestamp(
                     last_time,
@@ -249,6 +310,27 @@ def main():
                 print(
                     f"Symbol error {symbol}: {e}"
                 )
+
+        # إذا لم نجد فرصة لمدة 5 دقائق
+        now = time.time()
+
+        if (
+            not found_signal
+            and now - last_no_signal_message >= NO_SIGNAL_INTERVAL
+        ):
+            send(
+                TOKEN,
+                CHAT,
+                "🟡 لم يتم الحصول على فرصة دخول\n"
+                "🔄 جاري البحث عن فرصة أخرى..."
+            )
+
+            print(
+                "NO SIGNAL: لم يتم الحصول على فرصة دخول "
+                "خلال آخر 5 دقائق."
+            )
+
+            last_no_signal_message = now
 
         time.sleep(POLL)
 
