@@ -245,4 +245,4 @@ def save_signal(
 
 
 def signals_today():
-    today = datetime.now().strftime("%Y-%m-%
+    today = datetime.now().strftime("%Y-%m-%d")
