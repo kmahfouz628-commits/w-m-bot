@@ -12,11 +12,6 @@ from strategy import signal
 
 load_dotenv()
 
-
-# =========================
-# SETTINGS
-# =========================
-
 PO_SSID = os.getenv("PO_SSID", "").strip()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("CHAT_ID", "").strip()
@@ -31,10 +26,6 @@ MIN_REAL_PAYOUT = 80.0
 
 DB_FILE = "signals.db"
 
-
-# =========================
-# OTC PAIRS
-# =========================
 
 OTC_PAYOUTS = {
     "AEDCNY_otc": 92,
@@ -66,10 +57,6 @@ OTC_PAYOUTS = {
 }
 
 
-# =========================
-# REAL PAIRS
-# =========================
-
 REAL_SYMBOLS = [
     "CHFJPY",
     "EURCHF",
@@ -89,104 +76,26 @@ REAL_SYMBOLS = [
 ]
 
 
-# =========================
-# DATABASE
-# =========================
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            symbol TEXT,
-            market TEXT,
-            direction TEXT,
-            entry REAL,
-            expiry INTEGER,
-            payout REAL,
-            result TEXT DEFAULT 'PENDING'
-        )
-        """
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def save_signal(
-    symbol,
-    market,
-    direction,
-    entry,
-    expiry,
-    payout
-):
-    conn = sqlite3.connect(DB_FILE)
-
-    conn.execute(
-        """
-        INSERT INTO signals
-        (
-            created_at,
-            symbol,
-            market,
-            direction,
-            entry,
-            expiry,
-            payout,
-            result
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-        """,
-        (
-            datetime.now().isoformat(),
-            symbol,
-            market,
-            direction,
-            entry,
-            expiry,
-            payout,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def signals_today():
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    conn = sqlite3.connect(DB_FILE)
-
-    row = conn.execute(
-        """
-        SELECT COUNT(*)
-        FROM signals
-        WHERE created_at LIKE ?
-        """,
-        (today + "%",),
-    ).fetchone()
-
-    conn.close()
-
-    return int(row[0])
-
-
-# =========================
-# TELEGRAM
-# =========================
-
-def telegram_send(message):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram settings are missing.")
-        print(message)
-        return False
-
-    try:
-        import requests
-
-        url = (
-            "https://api.telegram.org
+PAIR_FLAGS = {
+    "AEDCNY_otc": "🇦🇪🇨🇳",
+    "AUDCAD_otc": "🇦🇺🇨🇦",
+    "AUDCHF_otc": "🇦🇺🇨🇭",
+    "AUDUSD_otc": "🇦🇺🇺🇸",
+    "CADJPY_otc": "🇨🇦🇯🇵",
+    "CHFJPY_otc": "🇨🇭🇯🇵",
+    "CHFNOK_otc": "🇨🇭🇳🇴",
+    "EURCHF_otc": "🇪🇺🇨🇭",
+    "EURHUF_otc": "🇪🇺🇭🇺",
+    "EURJPY_otc": "🇪🇺🇯🇵",
+    "EURRUB_otc": "🇪🇺🇷🇺",
+    "EURTRY_otc": "🇪🇺🇹🇷",
+    "EURUSD_otc": "🇪🇺🇺🇸",
+    "KESUSD_otc": "🇰🇪🇺🇸",
+    "MADUSD_otc": "🇲🇦🇺🇸",
+    "NGNUSD_otc": "🇳🇬🇺🇸",
+    "OMRCNY_otc": "🇴🇲🇨🇳",
+    "SARCNY_otc": "🇸🇦🇨🇳",
+    "UAHUSD_otc": "🇺🇦🇺🇸",
+    "USDARS_otc": "🇺🇸🇦🇷",
+    "USDBDT_otc": "🇺🇸🇧🇩",
+    "US
