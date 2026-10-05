@@ -10,7 +10,6 @@ class PocketOptionFeed:
         self.api = PocketOption(ssid)
 
     def connect(self):
-
         result = self.api.connect()
 
         if isinstance(result, tuple):
@@ -20,14 +19,9 @@ class PocketOptionFeed:
             return False
 
         for _ in range(60):
-
             try:
-                connected = self.api.check_connect()
-                synced = self.api.is_time_synced()
-
-                if connected and synced:
+                if self.api.check_connect() and self.api.is_time_synced():
                     return True
-
             except Exception:
                 pass
 
@@ -36,32 +30,24 @@ class PocketOptionFeed:
         return False
 
     def candles_m1(self, symbol, count=100):
-
         try:
-
             if not self.api.check_connect():
                 return pd.DataFrame()
 
             if not self.api.is_time_synced():
-
                 for _ in range(30):
-
                     try:
                         if self.api.is_time_synced():
                             break
                     except Exception:
                         pass
-
                     time.sleep(1)
 
             if not self.api.is_time_synced():
                 return pd.DataFrame()
 
             try:
-                self.api.subscribe(
-                    symbol,
-                    period=60
-                )
+                self.api.subscribe(symbol, period=60)
             except Exception:
                 pass
 
@@ -96,7 +82,6 @@ class PocketOptionFeed:
             )
 
             for col in ["open", "high", "low", "close"]:
-
                 if col not in df.columns:
                     return pd.DataFrame()
 
@@ -120,15 +105,34 @@ class PocketOptionFeed:
             return df.tail(count).reset_index(drop=True)
 
         except Exception as e:
-
-            print(
-                f"Historical candles error "
-                f"{symbol}: {e}"
-            )
-
+            print(f"Historical candles error {symbol}: {e}")
             return pd.DataFrame()
 
-    def payout_test(self, symbol):
+    def get_payout(self, symbol):
+        try:
+            method = getattr(self.api, "get_payout", None)
 
-        print("")
-        print("========== PAYOUT TEST =========
+            if not callable(method):
+                return None
+
+            payout = method(symbol)
+
+            if payout is None:
+                return None
+
+            payout = float(payout)
+
+            if payout <= 1:
+                payout *= 100
+
+            return payout
+
+        except Exception as e:
+            print(f"Payout error {symbol}: {e}")
+            return None
+
+    def close(self):
+        try:
+            self.api.disconnect_websocket()
+        except Exception:
+            pass
