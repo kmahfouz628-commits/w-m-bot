@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
 from telegram import send
+
 import store
 from strategy import signal
 from po_source import PocketOptionFeed
@@ -16,24 +17,206 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT = os.getenv("TELEGRAM_CHAT_ID")
 SSID = os.getenv("PO_SSID")
 
-SYMBOLS = [
-    x.strip()
-    for x in os.getenv(
-        "OTC_SYMBOLS",
-        "EURUSD_otc,GBPUSD_otc"
-    ).split(",")
-    if x.strip()
-]
-
-MAX = int(os.getenv("MAX_SIGNALS_PER_DAY", "4"))
+MAX_SIGNALS = int(os.getenv("MAX_SIGNALS_PER_DAY", "4"))
 POLL = int(os.getenv("POLL_SECONDS", "5"))
 
-# إرسال رسالة عدم وجود فرصة كل 5 دقائق
 NO_SIGNAL_INTERVAL = 300
 
 
-def check_pending(feed):
+# =========================================================
+# OTC PAIRS - فقط الأزواج التي أعطيتني إياها
+# النسب هنا هي النسب التي ظهرت عندك في Pocket Option
+# =========================================================
+
+OTC_PAYOUTS = {
+    "AEDCNY_otc": 92,
+    "AUDCAD_otc": 92,
+    "AUDCHF_otc": 85,
+    "AUDUSD_otc": 92,
+    "CADJPY_otc": 92,
+    "CHFJPY_otc": 92,
+    "CHFNOK_otc": 91,
+    "EURCHF_otc": 92,
+    "EURHUF_otc": 92,
+    "EURJPY_otc": 92,
+    "EURRUB_otc": 92,
+    "EURTRY_otc": 91,
+    "EURUSD_otc": 92,
+    "KESUSD_otc": 92,
+    "MADUSD_otc": 92,
+    "NGNUSD_otc": 92,
+    "OMRCNY_otc": 92,
+    "SARCNY_otc": 92,
+    "UAHUSD_otc": 86,
+    "USDARS_otc": 92,
+    "USDBDT_otc": 92,
+    "USDBRL_otc": 92,
+    "USDCLP_otc": 91,
+    "USDMXN_otc": 92,
+    "USDPKR_otc": 92,
+    "USDTHB_otc": 92,
+}
+
+
+# =========================================================
+# REAL PAIRS - فقط القائمة التي أعطيتني إياها
+# لا نضع نسبًا من عندنا.
+# =========================================================
+
+REAL_PAIRS = [
+    "CHFJPY",
+    "EURCHF",
+    "AUDCHF",
+    "EURUSD",
+    "CADJPY",
+    "AUDUSD",
+    "EURJPY",
+    "USDCAD",
+    "USDJPY",
+    "CADCHF",
+    "AUDCAD",
+    "AUDJPY",
+    "USDCHF",
+    "EURAUD",
+    "EURCAD",
+]
+
+
+# =========================================================
+# FLAGS
+# =========================================================
+
+FLAGS = {
+    "AEDCNY_otc": "🇦🇪/🇨🇳",
+    "AUDCAD_otc": "🇦🇺/🇨🇦",
+    "AUDCHF_otc": "🇦🇺/🇨🇭",
+    "AUDUSD_otc": "🇦🇺/🇺🇸",
+    "CADJPY_otc": "🇨🇦/🇯🇵",
+    "CHFJPY_otc": "🇨🇭/🇯🇵",
+    "CHFNOK_otc": "🇨🇭/🇳🇴",
+    "EURCHF_otc": "🇪🇺/🇨🇭",
+    "EURHUF_otc": "🇪🇺/🇭🇺",
+    "EURJPY_otc": "🇪🇺/🇯🇵",
+    "EURRUB_otc": "🇪🇺/🇷🇺",
+    "EURTRY_otc": "🇪🇺/🇹🇷",
+    "EURUSD_otc": "🇪🇺/🇺🇸",
+    "KESUSD_otc": "🇰🇪/🇺🇸",
+    "MADUSD_otc": "🇲🇦/🇺🇸",
+    "NGNUSD_otc": "🇳🇬/🇺🇸",
+    "OMRCNY_otc": "🇴🇲/🇨🇳",
+    "SARCNY_otc": "🇸🇦/🇨🇳",
+    "UAHUSD_otc": "🇺🇦/🇺🇸",
+    "USDARS_otc": "🇺🇸/🇦🇷",
+    "USDBDT_otc": "🇺🇸/🇧🇩",
+    "USDBRL_otc": "🇺🇸/🇧🇷",
+    "USDCLP_otc": "🇺🇸/🇨🇱",
+    "USDMXN_otc": "🇺🇸/🇲🇽",
+    "USDPKR_otc": "🇺🇸/🇵🇰",
+    "USDTHB_otc": "🇺🇸/🇹🇭",
+
+    "CHFJPY": "🇨🇭/🇯🇵",
+    "EURCHF": "🇪🇺/🇨🇭",
+    "AUDCHF": "🇦🇺/🇨🇭",
+    "EURUSD": "🇪🇺/🇺🇸",
+    "CADJPY": "🇨🇦/🇯🇵",
+    "AUDUSD": "🇦🇺/🇺🇸",
+    "EURJPY": "🇪🇺/🇯🇵",
+    "USDCAD": "🇺🇸/🇨🇦",
+    "USDJPY": "🇺🇸/🇯🇵",
+    "CADCHF": "🇨🇦/🇨🇭",
+    "AUDCAD": "🇦🇺/🇨🇦",
+    "AUDJPY": "🇦🇺/🇯🇵",
+    "USDCHF": "🇺🇸/🇨🇭",
+    "EURAUD": "🇪🇺/🇦🇺",
+    "EURCAD": "🇪🇺/🇨🇦",
+}
+
+
+def get_symbols():
+    """
+    OTC + REAL منفصلين تمامًا.
+    لا نستخدم أي زوج آخر.
+    """
+
+    otc = list(OTC_PAYOUTS.keys())
+    real = list(REAL_PAIRS)
+
+    return otc, real
+
+
+def get_real_payout(feed, symbol):
+    """
+    نحاول قراءة نسبة REAL الحالية من Pocket Option.
+    إذا لم تكن متاحة نرجع None ولا نخترع نسبة.
+    """
+
     try:
+        payout = feed.get_payout(symbol)
+
+        if payout is None:
+            return None
+
+        payout = float(payout)
+
+        if payout <= 1:
+            payout *= 100
+
+        return payout
+
+    except Exception as e:
+        print(f"REAL payout error {symbol}: {e}")
+        return None
+
+
+def get_otc_payout(feed, symbol):
+    """
+    نحاول أولًا قراءة النسبة الحالية.
+    إذا لم تكن متاحة نستخدم النسبة التي سجلناها من شاشة المستخدم.
+    """
+
+    try:
+        payout = feed.get_payout(symbol)
+
+        if payout is not None:
+            payout = float(payout)
+
+            if payout <= 1:
+                payout *= 100
+
+            return payout
+
+    except Exception as e:
+        print(f"Live OTC payout unavailable {symbol}: {e}")
+
+    return OTC_PAYOUTS.get(symbol)
+
+
+def payout_allowed(feed, symbol):
+    """
+    OTC >= 85%
+    REAL >= 80%
+    """
+
+    if symbol.endswith("_otc"):
+        payout = get_otc_payout(feed, symbol)
+
+        if payout is None:
+            return False, None
+
+        return payout >= 85, payout
+
+    payout = get_real_payout(feed, symbol)
+
+    if payout is None:
+        return False, None
+
+    return payout >= 80, payout
+
+
+def check_pending(feed):
+
+    try:
+
         conn = sqlite3.connect(store.DB)
 
         rows = conn.execute(
@@ -83,6 +266,7 @@ def check_pending(feed):
             )
 
             if result_close > entry:
+
                 result = (
                     "WIN"
                     if direction == "CALL"
@@ -90,6 +274,7 @@ def check_pending(feed):
                 )
 
             elif result_close < entry:
+
                 result = (
                     "WIN"
                     if direction == "PUT"
@@ -108,6 +293,7 @@ def check_pending(feed):
             )
 
     except Exception as e:
+
         print("Result check error:", e)
 
 
@@ -116,7 +302,10 @@ def success_text():
     w, l, d, rate = store.stats()
 
     if w + l == 0:
-        return "📊 نسبة النجاح: لا توجد نتائج مكتملة بعد"
+
+        return (
+            "📊 نسبة النجاح: لا توجد نتائج مكتملة بعد"
+        )
 
     return (
         f"📊 نسبة النجاح: {rate:.1f}%\n"
@@ -126,36 +315,40 @@ def success_text():
     )
 
 
-def test_pocket_option(feed):
-    """
-    فحص فعلي:
-    1) الاتصال بـ Pocket Option
-    2) محاولة الحصول على شموع OTC
-    """
+def test_pocket_option(feed, test_symbol):
 
     try:
+
         if not feed.connect():
-            return False, "🔴 Pocket Option: فشل الاتصال"
 
-        test_symbol = SYMBOLS[0]
-
-        df = feed.candles_m1(test_symbol, 10)
-
-        if df is None or len(df) == 0:
             return (
                 False,
-                "🟡 Pocket Option: متصل، لكن لم تصل بيانات OTC"
+                "🔴 Pocket Option: فشل الاتصال"
+            )
+
+        df = feed.candles_m1(
+            test_symbol,
+            10
+        )
+
+        if df is None or len(df) == 0:
+
+            return (
+                False,
+                "🟡 Pocket Option: متصل، "
+                "لكن لم تصل البيانات"
             )
 
         return (
             True,
             "🟢 Pocket Option: متصل\n"
-            f"🟢 بيانات OTC: تصل بشكل طبيعي\n"
+            "🟢 بيانات OTC: تصل بشكل طبيعي\n"
             f"💱 اختبار البيانات: {test_symbol}\n"
             f"📊 عدد الشموع المستلمة: {len(df)}"
         )
 
     except Exception as e:
+
         return (
             False,
             "🔴 فشل فحص Pocket Option\n"
@@ -168,24 +361,34 @@ def main():
     store.db()
 
     if not SSID:
+
         raise SystemExit(
             "PO_SSID is missing. Use a DEMO session only."
         )
 
     feed = PocketOptionFeed(SSID)
 
-    # فحص Pocket Option وبيانات OTC قبل بدء البحث
-    connection_ok, connection_message = test_pocket_option(feed)
+    otc_symbols, real_symbols = get_symbols()
+
+    test_symbol = otc_symbols[0]
+
+    connection_ok, connection_message = (
+        test_pocket_option(
+            feed,
+            test_symbol
+        )
+    )
 
     print(connection_message)
 
     if not connection_ok:
+
         send(
             TOKEN,
             CHAT,
             connection_message
             + "\n\n"
-            + "⚠️ البوت لن يبدأ البحث عن الإشارات حتى يتم التأكد من البيانات."
+            + "⚠️ البوت لن يبدأ البحث."
         )
 
         raise SystemExit(
@@ -195,32 +398,52 @@ def main():
     send(
         TOKEN,
         CHAT,
-        "🤖 تم تشغيل بوت إشارات OTC\n"
-        "🕐 فريم: دقيقة واحدة (M1)\n"
+        "🤖 تم تشغيل بوت الإشارات\n"
+        "🕐 M1\n"
         "⏱️ مدة الإشارة: 3 دقائق\n"
-        "🧪 تجريبي فقط — بدون تنفيذ تلقائي\n\n"
+        "🔄 استراتيجية: انعكاس\n"
+        "🧪 DEMO ONLY - NO AUTOMATIC TRADES\n\n"
         + connection_message
+        + "\n\n"
+        + f"🟢 OTC: {len(otc_symbols)} زوج مؤهل\n"
+        + f"🔵 REAL: {len(real_symbols)} زوج للمراقبة"
     )
 
     seen = {}
 
-    # وقت آخر رسالة "لا توجد فرصة"
     last_no_signal_message = time.time()
 
     while True:
 
         check_pending(feed)
 
-        if store.today_count() >= MAX:
+        if store.today_count() >= MAX_SIGNALS:
+
             time.sleep(30)
             continue
 
         found_signal = False
 
-        for symbol in SYMBOLS:
+        # =================================================
+        # أولًا OTC
+        # =================================================
+
+        for symbol in otc_symbols:
 
             try:
-                df = feed.candles_m1(symbol, 100)
+
+                allowed, payout = payout_allowed(
+                    feed,
+                    symbol
+                )
+
+                if not allowed:
+                    continue
+
+                df = feed.candles_m1(
+                    symbol,
+                    100
+                )
 
                 if df is None or len(df) < 40:
                     continue
@@ -233,10 +456,12 @@ def main():
 
                 cid = str(int(last_time))
 
-                if seen.get(symbol) == cid:
+                key = "OTC:" + symbol
+
+                if seen.get(key) == cid:
                     continue
 
-                seen[symbol] = cid
+                seen[key] = cid
 
                 s = signal(closed)
 
@@ -255,7 +480,9 @@ def main():
                     + timedelta(minutes=3)
                 )
 
-                signal_time = signal_datetime.isoformat()
+                signal_time = (
+                    signal_datetime.isoformat()
+                )
 
                 s.update(
                     symbol=symbol,
@@ -264,6 +491,11 @@ def main():
                 )
 
                 store.add(s)
+
+                flags = FLAGS.get(
+                    symbol,
+                    ""
+                )
 
                 if s["direction"] == "CALL":
 
@@ -278,19 +510,26 @@ def main():
                 entry_price = s["entry"]
 
                 message = (
-                    signal_title + "\n"
-                    + f"💱 الزوج: {symbol.replace('_otc', ' OTC')}\n"
-                    + f"💰 سعر الدخول: {entry_price:.6f}\n"
-                    + "⏱️ مدة الإشارة: 3 دقائق\n\n"
-                    + success_text() + "\n\n"
+                    signal_title
+                    + "\n"
+                    + f"💱 الزوج: {flags} "
+                    + f"{symbol.replace('_otc', ' OTC')}\n"
+                    + f"💰 الدخول: {entry_price:.6f}\n"
+                    + f"💵 العائد: {payout:.0f}%\n"
+                    + "⏱️ المدة: 3 دقائق\n\n"
+                    + success_text()
+                    + "\n\n"
                     + "📊 سبب الإشارة:\n"
-                    + f"• بولينجر باند: لمس/كسر {band}\n"
-                    + "• شمعة رفض مؤكدة\n"
+                    + f"• Donchian 20: لمس/كسر "
+                    + f"{band}\n"
+                    + "• شمعة انعكاس مؤكدة\n"
                     + f"• RSI(14): {s['rsi']:.1f}\n"
-                    + f"• ستوكاستك (5,3,3): "
+                    + f"• Stochastic(5,3,3): "
                     + f"{s['stoch_k']:.1f}\n"
+                    + f"• EMA50: {s['ema50']:.6f}\n"
                     + "• شمعة التأكيد أغلقت\n\n"
-                    + "🧪 تجريبي فقط — بدون تنفيذ تلقائي"
+                    + "🧪 DEMO ONLY\n"
+                    + "🚫 NO AUTOMATIC TRADES"
                 )
 
                 send(
@@ -300,34 +539,170 @@ def main():
                 )
 
                 print(
-                    f"SIGNAL {symbol}: "
+                    f"OTC SIGNAL {symbol}: "
                     f"{s['direction']} | "
-                    f"entry={entry_price}"
+                    f"payout={payout}"
                 )
+
+                if store.today_count() >= MAX_SIGNALS:
+                    break
 
             except Exception as e:
 
                 print(
-                    f"Symbol error {symbol}: {e}"
+                    f"OTC symbol error {symbol}: {e}"
                 )
 
-        # إذا لم نجد فرصة لمدة 5 دقائق
+        # =================================================
+        # ثانيًا REAL
+        # =================================================
+
+        if store.today_count() < MAX_SIGNALS:
+
+            for symbol in real_symbols:
+
+                try:
+
+                    allowed, payout = payout_allowed(
+                        feed,
+                        symbol
+                    )
+
+                    if not allowed:
+                        continue
+
+                    df = feed.candles_m1(
+                        symbol,
+                        100
+                    )
+
+                    if df is None or len(df) < 40:
+                        continue
+
+                    closed = df.iloc[:-1].copy()
+
+                    last_time = float(
+                        closed.iloc[-1]["time"]
+                    )
+
+                    cid = str(int(last_time))
+
+                    key = "REAL:" + symbol
+
+                    if seen.get(key) == cid:
+                        continue
+
+                    seen[key] = cid
+
+                    s = signal(closed)
+
+                    if not s:
+                        continue
+
+                    found_signal = True
+
+                    signal_datetime = (
+                        datetime.fromtimestamp(
+                            last_time,
+                            timezone.utc
+                        )
+                    )
+
+                    expiry = (
+                        signal_datetime
+                        + timedelta(minutes=3)
+                    )
+
+                    signal_time = (
+                        signal_datetime.isoformat()
+                    )
+
+                    s.update(
+                        symbol=symbol,
+                        signal_time=signal_time,
+                        expiry=expiry.timestamp()
+                    )
+
+                    store.add(s)
+
+                    flags = FLAGS.get(
+                        symbol,
+                        ""
+                    )
+
+                    if s["direction"] == "CALL":
+
+                        signal_title = "🟢 شراء (CALL)"
+                        band = "الحد السفلي"
+
+                    else:
+
+                        signal_title = "🔴 بيع (PUT)"
+                        band = "الحد العلوي"
+
+                    entry_price = s["entry"]
+
+                    message = (
+                        signal_title
+                        + "\n"
+                        + f"💱 الزوج: {flags} "
+                        + f"{symbol} REAL\n"
+                        + f"💰 الدخول: {entry_price:.6f}\n"
+                        + f"💵 العائد: {payout:.0f}%\n"
+                        + "⏱️ المدة: 3 دقائق\n\n"
+                        + success_text()
+                        + "\n\n"
+                        + "📊 سبب الإشارة:\n"
+                        + f"• Donchian 20: لمس/كسر "
+                        + f"{band}\n"
+                        + "• شمعة انعكاس مؤكدة\n"
+                        + f"• RSI(14): {s['rsi']:.1f}\n"
+                        + f"• Stochastic(5,3,3): "
+                        + f"{s['stoch_k']:.1f}\n"
+                        + f"• EMA50: {s['ema50']:.6f}\n"
+                        + "• شمعة التأكيد أغلقت\n\n"
+                        + "🧪 DEMO ONLY\n"
+                        + "🚫 NO AUTOMATIC TRADES"
+                    )
+
+                    send(
+                        TOKEN,
+                        CHAT,
+                        message
+                    )
+
+                    print(
+                        f"REAL SIGNAL {symbol}: "
+                        f"{s['direction']} | "
+                        f"payout={payout}"
+                    )
+
+                    if store.today_count() >= MAX_SIGNALS:
+                        break
+
+                except Exception as e:
+
+                    print(
+                        f"REAL symbol error {symbol}: {e}"
+                    )
+
         now = time.time()
 
         if (
             not found_signal
-            and now - last_no_signal_message >= NO_SIGNAL_INTERVAL
+            and now - last_no_signal_message
+            >= NO_SIGNAL_INTERVAL
         ):
+
             send(
                 TOKEN,
                 CHAT,
-                "🟡 لم يتم الحصول على فرصة دخول\n"
-                "🔄 جاري البحث عن فرصة أخرى..."
+                "🟡 لا توجد فرصة مطابقة حاليًا\n"
+                "🔄 ما زلت أبحث..."
             )
 
             print(
-                "NO SIGNAL: لم يتم الحصول على فرصة دخول "
-                "خلال آخر 5 دقائق."
+                "NO SIGNAL: لا توجد فرصة مطابقة."
             )
 
             last_no_signal_message = now
