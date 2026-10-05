@@ -19,7 +19,6 @@ class PocketOptionFeed:
         elif result is False:
             return False
 
-        # انتظار الاتصال ومزامنة وقت السيرفر
         for _ in range(60):
 
             try:
@@ -58,7 +57,6 @@ class PocketOptionFeed:
             if not self.api.is_time_synced():
                 return pd.DataFrame()
 
-            # الاشتراك في بيانات الزوج M1
             try:
                 self.api.subscribe(
                     symbol,
@@ -84,11 +82,7 @@ class PocketOptionFeed:
             rename_map = {
                 "from": "timestamp",
                 "time": "timestamp",
-                "at": "timestamp",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "close": "close"
+                "at": "timestamp"
             }
 
             df = df.rename(columns=rename_map)
@@ -101,12 +95,8 @@ class PocketOptionFeed:
                 errors="coerce"
             )
 
-            for col in [
-                "open",
-                "high",
-                "low",
-                "close"
-            ]:
+            for col in ["open", "high", "low", "close"]:
+
                 if col not in df.columns:
                     return pd.DataFrame()
 
@@ -138,9 +128,7 @@ class PocketOptionFeed:
 
             return pd.DataFrame()
 
-    def close(self):
+    def payout_test(self, symbol):
 
-        try:
-            self.api.disconnect_websocket()
-        except Exception:
-            pass
+        print("")
+        print("========== PAYOUT TEST =========
