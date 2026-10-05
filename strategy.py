@@ -1,166 +1,364 @@
 import pandas as pd
+import numpy as np
 
 
-BB_PERIOD = 20
-BB_STD = 2.0
+# ==============================
+# SETTINGS
+# ==============================
 
+DONCHIAN_PERIOD = 20
 RSI_PERIOD = 14
+EMA_PERIOD = 50
 
-STOCH_K = 5
+STOCH_K_PERIOD = 5
 STOCH_SMOOTH = 3
-STOCH_D = 3
+STOCH_D_PERIOD = 3
+
+MIN_WICK_BODY_RATIO = 1.5
+MIN_BODY_RANGE_RATIO = 0.10
 
 
-def indicators(df):
-    x = df.copy()
+# ==============================
+# DATA PREPARATION
+# ==============================
 
-    # Bollinger Bands 20 / 2
-    mid = x["close"].rolling(BB_PERIOD).mean()
-    std = x["close"].rolling(BB_PERIOD).std(ddof=0)
+def prepare_data(df):
+    if df is None or len(df) < 60:
+        return None
 
-    x["bb_mid"] = mid
-    x["bb_upper"] = mid + (BB_STD * std)
-    x["bb_lower"] = mid - (BB_STD * std)
+    data = df.copy()
 
-    # RSI 14
-    delta = x["close"].diff()
+    # Normalize column names
+    data.columns = [str(c).lower().strip() for c in data.columns]
 
-    gain = delta.clip(lower=0).rolling(RSI_PERIOD).mean()
-    loss = (-delta.clip(upper=0)).rolling(RSI_PERIOD).mean()
+    required = ["open", "high", "low", "close"]
 
-    rs = gain / loss.replace(0, float("nan"))
-    x["rsi"] = 100 - (100 / (1 + rs))
+    for col in required:
+        if col not in data.columns:
+            return None
 
-    # Stochastic 5,3,3
-    low = x["low"].rolling(STOCH_K).min()
-    high = x["high"].rolling(STOCH_K).max()
+    for col in required:
+        data[col] = pd.to_numeric(data[col], errors="coerce")
 
-    raw = (
-        100 * (x["close"] - low) /
-        (high - low).replace(0, float("nan"))
+    data = data.dropna(subset=required).reset_index(drop=True)
+
+    if len(data) < 60:
+        return None
+
+    return data
+
+
+# ==============================
+# RSI 14
+# ==============================
+
+def calculate_rsi(close, period=RSI_PERIOD):
+    delta = close.diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period
+    ).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+# ==============================
+# STOCHASTIC 5,3,3
+# ==============================
+
+def calculate_stochastic(data):
+    lowest_low = data["low"].rolling(STOCH_K_PERIOD).min()
+    highest_high = data["high"].rolling(STOCH_K_PERIOD).max()
+
+    denominator = (highest_high - lowest_low).replace(0, np.nan)
+
+    raw_k = (
+        100
+        * (data["close"] - lowest_low)
+        / denominator
     )
 
-    x["stoch_k"] = raw.rolling(STOCH_SMOOTH).mean()
-    x["stoch_d"] = x["stoch_k"].rolling(STOCH_D).mean()
+    k = raw_k.rolling(STOCH_SMOOTH).mean()
+    d = k.rolling(STOCH_D_PERIOD).mean()
 
-    return x
+    return k, d
 
 
-def rejection(candle, side):
-    body = abs(candle["close"] - candle["open"])
-
-    if body == 0:
-        return False
-
-    if side == "CALL":
-        lower_wick = (
-            min(candle["open"], candle["close"])
-            - candle["low"]
-        )
-
-        return (
-            candle["close"] > candle["open"]
-            and lower_wick >= body
-        )
-
-    upper_wick = (
-        candle["high"]
-        - max(candle["open"], candle["close"])
-    )
-
-    return (
-        candle["close"] < candle["open"]
-        and upper_wick >= body
-    )
-
+# ==============================
+# MAIN SIGNAL
+# ==============================
 
 def signal(df):
-    if df is None or len(df) < 40:
+
+    data = prepare_data(df)
+
+    if data is None:
         return None
 
-    x = indicators(df).dropna()
+    # --------------------------------
+    # Indicators
+    # --------------------------------
 
-    if len(x) < 3:
-        return None
+    data["rsi"] = calculate_rsi(data["close"])
 
-    # آخر شمعتين مغلقتين
-    prev = x.iloc[-2]
-    cur = x.iloc[-1]
-
-    # CALL
-    call = (
-        cur["low"] <= cur["bb_lower"]
-        and rejection(cur, "CALL")
-
-        and prev["rsi"] <= 30
-        and cur["rsi"] > prev["rsi"]
-        and cur["rsi"] < 50
-
-        and prev["stoch_k"] <= 20
-        and cur["stoch_k"] > prev["stoch_k"]
-        and cur["stoch_k"] > cur["stoch_d"]
+    data["ema50"] = (
+        data["close"]
+        .ewm(span=EMA_PERIOD, adjust=False)
+        .mean()
     )
 
-    # PUT
-    put = (
-        cur["high"] >= cur["bb_upper"]
-        and rejection(cur, "PUT")
+    data["stoch_k"], data["stoch_d"] = calculate_stochastic(data)
 
-        and prev["rsi"] >= 70
-        and cur["rsi"] < prev["rsi"]
-        and cur["rsi"] > 50
+    # --------------------------------
+    # Donchian 20
+    #
+    # IMPORTANT:
+    # Channel is based on the PREVIOUS
+    # 20 candles, not the current candle.
+    # --------------------------------
 
-        and prev["stoch_k"] >= 80
-        and cur["stoch_k"] < prev["stoch_k"]
-        and cur["stoch_k"] < cur["stoch_d"]
+    data["donchian_upper"] = (
+        data["high"]
+        .shift(1)
+        .rolling(DONCHIAN_PERIOD)
+        .max()
     )
 
-    if not call and not put:
+    data["donchian_lower"] = (
+        data["low"]
+        .shift(1)
+        .rolling(DONCHIAN_PERIOD)
+        .min()
+    )
+
+    # --------------------------------
+    # Last CLOSED candle
+    # --------------------------------
+
+    current = data.iloc[-1]
+    previous = data.iloc[-2]
+
+    # Make sure indicators exist
+    indicator_values = [
+        current["rsi"],
+        previous["rsi"],
+        current["ema50"],
+        current["donchian_upper"],
+        current["donchian_lower"],
+    ]
+
+    if any(pd.isna(x) for x in indicator_values):
         return None
 
-    if call:
-        direction = "CALL"
-        band = "LOWER BAND"
-        emoji = "🟢"
+    # --------------------------------
+    # Candle information
+    # --------------------------------
 
+    open_price = current["open"]
+    high = current["high"]
+    low = current["low"]
+    close = current["close"]
+
+    candle_range = high - low
+
+    if candle_range <= 0:
+        return None
+
+    body = abs(close - open_price)
+
+    upper_wick = high - max(open_price, close)
+    lower_wick = min(open_price, close) - low
+
+    # Avoid tiny / almost-doji candles
+    if body <= 0:
+        return None
+
+    if (body / candle_range) < MIN_BODY_RANGE_RATIO:
+        return None
+
+    # --------------------------------
+    # Donchian boundaries
+    # --------------------------------
+
+    upper = current["donchian_upper"]
+    lower = current["donchian_lower"]
+
+    # --------------------------------
+    # RSI CROSS
+    # --------------------------------
+
+    # PUT:
+    # Previous RSI above 70
+    # Current RSI crosses below 70
+
+    rsi_put_cross = (
+        previous["rsi"] > 70
+        and current["rsi"] < 70
+    )
+
+    # CALL:
+    # Previous RSI below 30
+    # Current RSI crosses above 30
+
+    rsi_call_cross = (
+        previous["rsi"] < 30
+        and current["rsi"] > 30
+    )
+
+    # --------------------------------
+    # PUT CONDITIONS
+    # --------------------------------
+
+    put_donchian_touch = high >= upper
+
+    put_rejection = (
+        close < open_price
+        and upper_wick >= MIN_WICK_BODY_RATIO * body
+        and upper_wick > lower_wick
+        and close < upper
+    )
+
+    put_signal = (
+        put_donchian_touch
+        and put_rejection
+        and rsi_put_cross
+    )
+
+    # --------------------------------
+    # CALL CONDITIONS
+    # --------------------------------
+
+    call_donchian_touch = low <= lower
+
+    call_rejection = (
+        close > open_price
+        and lower_wick >= MIN_WICK_BODY_RATIO * body
+        and lower_wick > upper_wick
+        and close > lower
+    )
+
+    call_signal = (
+        call_donchian_touch
+        and call_rejection
+        and rsi_call_cross
+    )
+
+    # --------------------------------
+    # EMA 50 CONTEXT
+    # NOT an entry condition
+    # --------------------------------
+
+    if close > current["ema50"]:
+        ema_context = "السعر فوق EMA 50"
+    elif close < current["ema50"]:
+        ema_context = "السعر تحت EMA 50"
     else:
-        direction = "PUT"
-        band = "UPPER BAND"
-        emoji = "🔴"
+        ema_context = "السعر عند EMA 50"
 
-    try:
-        signal_time = pd.to_datetime(
-            cur["time"],
-            unit="s",
-            utc=True
+    # --------------------------------
+    # STOCHASTIC CONTEXT
+    # NOT an entry condition
+    # --------------------------------
+
+    stoch_k = current["stoch_k"]
+    stoch_d = current["stoch_d"]
+
+    if pd.isna(stoch_k) or pd.isna(stoch_d):
+        stoch_context = "غير متاح"
+    elif stoch_k > 80 and stoch_k < stoch_d:
+        stoch_context = "يدعم PUT"
+    elif stoch_k < 20 and stoch_k > stoch_d:
+        stoch_context = "يدعم CALL"
+    else:
+        stoch_context = "غير حاسم"
+
+    # --------------------------------
+    # RETURN PUT
+    # --------------------------------
+
+    if put_signal:
+
+        reason = (
+            "انعكاس PUT | "
+            "السعر لمس/كسر الحد العلوي لـ Donchian 20 | "
+            "شمعة رفض هابطة بذيل علوي قوي | "
+            "RSI 14 اخترق 70 للأسفل | "
+            f"{ema_context} | "
+            f"Stochastic: {stoch_context}"
         )
-    except Exception:
-        signal_time = pd.to_datetime(
-            cur["time"],
-            utc=True
+
+        return {
+            "direction": "PUT",
+            "signal": "PUT",
+            "expiry": 3,
+            "timeframe": "M1",
+            "reason": reason,
+            "rsi": round(float(current["rsi"]), 2),
+            "ema50": round(float(current["ema50"]), 6),
+            "stoch_k": (
+                None if pd.isna(stoch_k)
+                else round(float(stoch_k), 2)
+            ),
+            "stoch_d": (
+                None if pd.isna(stoch_d)
+                else round(float(stoch_d), 2)
+            ),
+            "donchian_upper": round(float(upper), 6),
+            "donchian_lower": round(float(lower), 6),
+        }
+
+    # --------------------------------
+    # RETURN CALL
+    # --------------------------------
+
+    if call_signal:
+
+        reason = (
+            "انعكاس CALL | "
+            "السعر لمس/كسر الحد السفلي لـ Donchian 20 | "
+            "شمعة رفض صاعدة بذيل سفلي قوي | "
+            "RSI 14 اخترق 30 للأعلى | "
+            f"{ema_context} | "
+            f"Stochastic: {stoch_context}"
         )
 
-    reason = (
-        f"{emoji} {direction}\n"
-        f"• Bollinger Bands: {band} touch/break\n"
-        f"• Rejection candle confirmed\n"
-        f"• RSI(14): {prev['rsi']:.1f} → {cur['rsi']:.1f}\n"
-        f"• Stochastic K: "
-        f"{prev['stoch_k']:.1f} → {cur['stoch_k']:.1f}\n"
-        f"• Stochastic D: {cur['stoch_d']:.1f}\n"
-        f"• Confirmation candle CLOSED"
-    )
+        return {
+            "direction": "CALL",
+            "signal": "CALL",
+            "expiry": 3,
+            "timeframe": "M1",
+            "reason": reason,
+            "rsi": round(float(current["rsi"]), 2),
+            "ema50": round(float(current["ema50"]), 6),
+            "stoch_k": (
+                None if pd.isna(stoch_k)
+                else round(float(stoch_k), 2)
+            ),
+            "stoch_d": (
+                None if pd.isna(stoch_d)
+                else round(float(stoch_d), 2)
+            ),
+            "donchian_upper": round(float(upper), 6),
+            "donchian_lower": round(float(lower), 6),
+        }
 
-    return {
-        "direction": direction,
-        "entry": float(cur["close"]),
-        "time": signal_time,
-        "reason": reason,
-        "rsi": float(cur["rsi"]),
-        "stoch_k": float(cur["stoch_k"]),
-        "stoch_d": float(cur["stoch_d"]),
-        "indicators_confirmed": 3,
-        "total_indicators": 3,
-        "auto_trade": False,
-        "expiry_minutes": 3
-    }
+    # --------------------------------
+    # NO SIGNAL
+    # --------------------------------
+
+    return None
