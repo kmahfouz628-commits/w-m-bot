@@ -1,46 +1,40 @@
 import os
 import time
 import sqlite3
-from datetime import datetime, timezone, timedelta
+import traceback
+from datetime import datetime
 
 from dotenv import load_dotenv
-from telegram import send
 
-import store
-from strategy import signal
 from po_source import PocketOptionFeed
+from strategy import signal
 
 
 load_dotenv()
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT = os.getenv("TELEGRAM_CHAT_ID")
-SSID = os.getenv("PO_SSID")
 
-MAX_SIGNALS = int(os.getenv("MAX_SIGNALS_PER_DAY", "4"))
+# =========================
+# SETTINGS
+# =========================
 
-# لا نضغط على Pocket Option كل 5 ثواني.
-# البوت يوزع فحص الأزواج تدريجيًا.
-POLL = int(os.getenv("POLL_SECONDS", "3"))
+PO_SSID = os.getenv("PO_SSID", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
-NO_SIGNAL_INTERVAL = 300
-
-# عدد الأزواج التي نفحصها في الدورة الواحدة
+MAX_SIGNALS_PER_DAY = 4
+POLL_SECONDS = 3
 BATCH_SIZE = 4
-
-# انتظار بسيط بين طلبات البيانات
 REQUEST_DELAY = 1.0
 
-# إعادة فحص السعر/البيانات لنفس الزوج بعد هذه المدة
-SYMBOL_COOLDOWN = 8
+MIN_OTC_PAYOUT = 85.0
+MIN_REAL_PAYOUT = 80.0
 
-# مدة حفظ نسبة العائد في الذاكرة
-PAYOUT_CACHE_SECONDS = 300
+DB_FILE = "signals.db"
 
 
-# =========================================================
+# =========================
 # OTC PAIRS
-# =========================================================
+# =========================
 
 OTC_PAYOUTS = {
     "AEDCNY_otc": 92,
@@ -72,11 +66,11 @@ OTC_PAYOUTS = {
 }
 
 
-# =========================================================
+# =========================
 # REAL PAIRS
-# =========================================================
+# =========================
 
-REAL_PAIRS = [
+REAL_SYMBOLS = [
     "CHFJPY",
     "EURCHF",
     "AUDCHF",
@@ -95,172 +89,104 @@ REAL_PAIRS = [
 ]
 
 
-# =========================================================
-# FLAGS
-# =========================================================
+# =========================
+# DATABASE
+# =========================
 
-FLAGS = {
-    "AEDCNY_otc": "🇦🇪/🇨🇳",
-    "AUDCAD_otc": "🇦🇺/🇨🇦",
-    "AUDCHF_otc": "🇦🇺/🇨🇭",
-    "AUDUSD_otc": "🇦🇺/🇺🇸",
-    "CADJPY_otc": "🇨🇦/🇯🇵",
-    "CHFJPY_otc": "🇨🇭/🇯🇵",
-    "CHFNOK_otc": "🇨🇭/🇳🇴",
-    "EURCHF_otc": "🇪🇺/🇨🇭",
-    "EURHUF_otc": "🇪🇺/🇭🇺",
-    "EURJPY_otc": "🇪🇺/🇯🇵",
-    "EURRUB_otc": "🇪🇺/🇷🇺",
-    "EURTRY_otc": "🇪🇺/🇹🇷",
-    "EURUSD_otc": "🇪🇺/🇺🇸",
-    "KESUSD_otc": "🇰🇪/🇺🇸",
-    "MADUSD_otc": "🇲🇦/🇺🇸",
-    "NGNUSD_otc": "🇳🇬/🇺🇸",
-    "OMRCNY_otc": "🇴🇲/🇨🇳",
-    "SARCNY_otc": "🇸🇦/🇨🇳",
-    "UAHUSD_otc": "🇺🇦/🇺🇸",
-    "USDARS_otc": "🇺🇸/🇦🇷",
-    "USDBDT_otc": "🇺🇸/🇧🇩",
-    "USDBRL_otc": "🇺🇸/🇧🇷",
-    "USDCLP_otc": "🇺🇸/🇨🇱",
-    "USDMXN_otc": "🇺🇸/🇲🇽",
-    "USDPKR_otc": "🇺🇸/🇵🇰",
-    "USDTHB_otc": "🇺🇸/🇹🇭",
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
 
-    "CHFJPY": "🇨🇭/🇯🇵",
-    "EURCHF": "🇪🇺/🇨🇭",
-    "AUDCHF": "🇦🇺/🇨🇭",
-    "EURUSD": "🇪🇺/🇺🇸",
-    "CADJPY": "🇨🇦/🇯🇵",
-    "AUDUSD": "🇦🇺/🇺🇸",
-    "EURJPY": "🇪🇺/🇯🇵",
-    "USDCAD": "🇺🇸/🇨🇦",
-    "USDJPY": "🇺🇸/🇯🇵",
-    "CADCHF": "🇨🇦/🇨🇭",
-    "AUDCAD": "🇦🇺/🇨🇦",
-    "AUDJPY": "🇦🇺/🇯🇵",
-    "USDCHF": "🇺🇸/🇨🇭",
-    "EURAUD": "🇪🇺/🇦🇺",
-    "EURCAD": "🇪🇺/🇨🇦",
-}
-
-
-def get_symbols():
-    return list(OTC_PAYOUTS.keys()), list(REAL_PAIRS)
-
-
-# =========================================================
-# PAYOUT CACHE
-# =========================================================
-
-payout_cache = {}
-
-
-def get_payout_cached(feed, symbol):
-
-    now = time.time()
-
-    cached = payout_cache.get(symbol)
-
-    if cached:
-        payout, timestamp = cached
-
-        if now - timestamp < PAYOUT_CACHE_SECONDS:
-            return payout
-
-    try:
-        payout = feed.get_payout(symbol)
-
-        if payout is not None:
-
-            payout = float(payout)
-
-            if payout <= 1:
-                payout *= 100
-
-            payout_cache[symbol] = (
-                payout,
-                now
-            )
-
-            return payout
-
-    except Exception as e:
-        print(
-            f"Payout unavailable {symbol}: {e}"
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT,
+            symbol TEXT,
+            market TEXT,
+            direction TEXT,
+            entry REAL,
+            expiry INTEGER,
+            payout REAL,
+            result TEXT DEFAULT 'PENDING'
         )
-
-    # OTC فقط له fallback معروف
-    if symbol.endswith("_otc"):
-
-        payout = OTC_PAYOUTS.get(symbol)
-
-        if payout is not None:
-
-            payout_cache[symbol] = (
-                payout,
-                now
-            )
-
-            return payout
-
-    return None
-
-
-def payout_allowed(feed, symbol):
-
-    payout = get_payout_cached(
-        feed,
-        symbol
+        """
     )
 
-    if payout is None:
-        return False, None
-
-    if symbol.endswith("_otc"):
-        return payout >= 85, payout
-
-    return payout >= 80, payout
+    conn.commit()
+    conn.close()
 
 
-# =========================================================
-# SAFE CONNECTION
-# =========================================================
+def save_signal(
+    symbol,
+    market,
+    direction,
+    entry,
+    expiry,
+    payout
+):
+    conn = sqlite3.connect(DB_FILE)
 
-connection_state = True
-connection_failures = 0
+    conn.execute(
+        """
+        INSERT INTO signals
+        (
+            created_at,
+            symbol,
+            market,
+            direction,
+            entry,
+            expiry,
+            payout,
+            result
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        """,
+        (
+            datetime.now().isoformat(),
+            symbol,
+            market,
+            direction,
+            entry,
+            expiry,
+            payout,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
 
 
-def reconnect(feed):
+def signals_today():
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    global connection_state
-    global connection_failures
+    conn = sqlite3.connect(DB_FILE)
 
-    print("🔄 محاولة إعادة الاتصال بـ Pocket Option...")
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM signals
+        WHERE created_at LIKE ?
+        """,
+        (today + "%",),
+    ).fetchone()
+
+    conn.close()
+
+    return int(row[0])
+
+
+# =========================
+# TELEGRAM
+# =========================
+
+def telegram_send(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram settings are missing.")
+        print(message)
+        return False
 
     try:
+        import requests
 
-        ok = feed.connect()
-
-        if ok:
-
-            connection_state = True
-            connection_failures = 0
-
-            print(
-                "🟢 تمت إعادة الاتصال بنجاح"
-            )
-
-            return True
-
-    except Exception as e:
-
-        print(
-            f"Reconnect error: {e}"
-        )
-
-    connection_state = False
-
-    print(
-        "🔴 فشل إعادة الاتصال"
-   
+        url = (
+            "https://api.telegram.org
