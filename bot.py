@@ -1,7 +1,7 @@
 import os
 import time
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -119,6 +119,7 @@ def send_telegram(message):
     }
 
     try:
+
         response = requests.post(
             url,
             data=payload,
@@ -135,7 +136,10 @@ def send_telegram(message):
         )
 
     except Exception as e:
-        print("Telegram connection error:", e)
+        print(
+            "Telegram connection error:",
+            e
+        )
 
     return False
 
@@ -151,18 +155,32 @@ def connect_feed():
         return None
 
     try:
-        print("Connecting to Pocket Option...")
+
+        print(
+            "Connecting to Pocket Option..."
+        )
 
         feed = PocketOptionFeed(SSID)
 
         if feed.connect():
-            print("Pocket Option connected successfully")
+
+            print(
+                "Pocket Option connected successfully"
+            )
+
             return feed
 
-        print("Pocket Option connection failed")
+        print(
+            "Pocket Option connection failed"
+        )
 
     except Exception as e:
-        print("Pocket Option connection error:", e)
+
+        print(
+            "Pocket Option connection error:",
+            e
+        )
+
         traceback.print_exc()
 
     return None
@@ -171,12 +189,15 @@ def connect_feed():
 def feed_connected(feed):
 
     try:
+
         return (
             feed is not None
             and feed.api.check_connect()
             and feed.api.is_time_synced()
         )
+
     except Exception:
+
         return False
 
 
@@ -187,6 +208,7 @@ def feed_connected(feed):
 def get_current_payout(feed, symbol):
 
     try:
+
         payout = feed.get_payout(symbol)
 
         if payout is None:
@@ -200,7 +222,11 @@ def get_current_payout(feed, symbol):
         return payout
 
     except Exception as e:
-        print(f"Payout error {symbol}: {e}")
+
+        print(
+            f"Payout error {symbol}: {e}"
+        )
+
         return None
 
 
@@ -211,7 +237,11 @@ def get_current_payout(feed, symbol):
 def get_candles(feed, symbol):
 
     try:
-        df = feed.candles_m1(symbol, 100)
+
+        df = feed.candles_m1(
+            symbol,
+            100
+        )
 
         if df is None or len(df) < 60:
             return None
@@ -219,8 +249,47 @@ def get_candles(feed, symbol):
         return df
 
     except Exception as e:
-        print(f"Candles error {symbol}: {e}")
+
+        print(
+            f"Candles error {symbol}: {e}"
+        )
+
         return None
+
+
+# =========================================================
+# TIME CONVERSION
+# =========================================================
+
+def candle_timestamp(value):
+
+    try:
+
+        if hasattr(value, "timestamp"):
+            return float(value.timestamp())
+
+        return float(value)
+
+    except Exception:
+
+        return None
+
+
+# =========================================================
+# DISPLAY NAME
+# =========================================================
+
+def get_display_name(symbol):
+
+    for pair_symbol, display_name in OTC_PAIRS:
+
+        if pair_symbol == symbol:
+            return display_name
+
+    return symbol.replace(
+        "_otc",
+        " OTC"
+    )
 
 
 # =========================================================
@@ -235,8 +304,12 @@ def check_pending(feed):
 
         rows = conn.execute(
             """
-            SELECT id, symbol, signal_time,
-                   direction, entry, expiry
+            SELECT id,
+                   symbol,
+                   signal_time,
+                   direction,
+                   entry,
+                   expiry
             FROM signals
             WHERE result='PENDING'
             """
@@ -244,74 +317,295 @@ def check_pending(feed):
 
         conn.close()
 
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(
+            timezone.utc
+        ).timestamp()
 
-        for (
-            row_id,
-            symbol,
-            signal_time,
-            direction,
-            entry,
-            expiry
-        ) in rows:
+        for row in rows:
 
-            if now < expiry:
+            (
+                row_id,
+                symbol,
+                signal_time,
+                direction,
+                entry,
+                expiry
+            ) = row
+
+            # -------------------------------------------------
+            # Not expired yet
+            # -------------------------------------------------
+
+            if now < float(expiry):
                 continue
 
-            df = feed.candles_m1(symbol, 100)
+            # -------------------------------------------------
+            # Get fresh OTC candles
+            # -------------------------------------------------
 
-            if df is None or len(df) < 2:
-                continue
+            try:
 
-            target_time = expiry - 60
-
-            candles = df[
-                df["time"].apply(
-                    lambda x:
-                    x.timestamp()
-                    if hasattr(x, "timestamp")
-                    else float(x)
-                ) == target_time
-            ]
-
-            if candles.empty:
-                continue
-
-            result_close = float(
-                candles.iloc[-1]["close"]
-            )
-
-            if result_close > entry:
-                result = (
-                    "WIN"
-                    if direction == "CALL"
-                    else "LOSS"
+                df = feed.candles_m1(
+                    symbol,
+                    100
                 )
 
-            elif result_close < entry:
-                result = (
-                    "WIN"
-                    if direction == "PUT"
-                    else "LOSS"
+            except Exception as e:
+
+                print(
+                    f"Result candles error "
+                    f"{symbol}: {e}"
+                )
+
+                continue
+
+            if df is None or len(df) < 3:
+                continue
+
+            # -------------------------------------------------
+            # The candle ending at expiry
+            #
+            # Signal candle:
+            # 14:00 -> entry at its close
+            #
+            # Expiry:
+            # 14:03
+            #
+            # Result candle:
+            # 14:02 candle close
+            # -------------------------------------------------
+
+            target_time = (
+                float(expiry) - 60
+            )
+
+            best_candle = None
+            best_difference = None
+
+            for _, candle in df.iterrows():
+
+                ts = candle_timestamp(
+                    candle["time"]
+                )
+
+                if ts is None:
+                    continue
+
+                difference = abs(
+                    ts - target_time
+                )
+
+                # Allow small timestamp differences.
+                if difference <= 5:
+
+                    if (
+                        best_difference is None
+                        or difference < best_difference
+                    ):
+
+                        best_difference = difference
+                        best_candle = candle
+
+            # -------------------------------------------------
+            # If exact target candle wasn't found,
+            # use the latest candle that has already closed
+            # at or before expiry.
+            # -------------------------------------------------
+
+            if best_candle is None:
+
+                candidates = []
+
+                for _, candle in df.iterrows():
+
+                    ts = candle_timestamp(
+                        candle["time"]
+                    )
+
+                    if ts is None:
+                        continue
+
+                    if ts <= target_time:
+
+                        candidates.append(
+                            (ts, candle)
+                        )
+
+                if candidates:
+
+                    candidates.sort(
+                        key=lambda x: x[0]
+                    )
+
+                    best_candle = candidates[-1][1]
+
+            if best_candle is None:
+
+                print(
+                    f"Waiting for expiry candle "
+                    f"{symbol}"
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # Result close
+            # -------------------------------------------------
+
+            try:
+
+                result_close = float(
+                    best_candle["close"]
+                )
+
+                entry_price = float(entry)
+
+            except Exception as e:
+
+                print(
+                    f"Price conversion error "
+                    f"{symbol}: {e}"
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # WIN / LOSS / DRAW
+            # -------------------------------------------------
+
+            if result_close > entry_price:
+
+                if direction == "CALL":
+                    result = "WIN"
+                else:
+                    result = "LOSS"
+
+            elif result_close < entry_price:
+
+                if direction == "PUT":
+                    result = "WIN"
+                else:
+                    result = "LOSS"
+
+            else:
+
+                result = "DRAW"
+
+            # -------------------------------------------------
+            # Save result
+            # -------------------------------------------------
+
+            try:
+
+                store.finish(
+                    signal_time,
+                    result
+                )
+
+            except Exception as e:
+
+                print(
+                    f"Database result error "
+                    f"{symbol}: {e}"
+                )
+
+                continue
+
+            # -------------------------------------------------
+            # Get updated statistics
+            # -------------------------------------------------
+
+            w, l, d, rate = store.stats()
+
+            display_name = get_display_name(
+                symbol
+            )
+
+            # -------------------------------------------------
+            # Arabic result message
+            # -------------------------------------------------
+
+            if result == "WIN":
+
+                result_title = (
+                    "✅ نجحت — WIN"
+                )
+
+                result_text = (
+                    "الإشارة حققت النتيجة الصحيحة "
+                    "بعد انتهاء 3 دقائق."
+                )
+
+            elif result == "LOSS":
+
+                result_title = (
+                    "❌ خسرت — LOSS"
+                )
+
+                result_text = (
+                    "الإشارة لم تحقق النتيجة "
+                    "المتوقعة بعد انتهاء 3 دقائق."
                 )
 
             else:
-                result = "DRAW"
 
-            store.finish(
-                signal_time,
-                result
+                result_title = (
+                    "🟡 تعادل — DRAW"
+                )
+
+                result_text = (
+                    "سعر الدخول وسعر النهاية "
+                    "كانا متساويين."
+                )
+
+            direction_ar = (
+                "🟢 شراء"
+                if direction == "CALL"
+                else "🔴 بيع"
+            )
+
+            result_message = (
+                f"{result_title}\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📊 الزوج: {display_name}\n"
+                f"📌 الاتجاه: {direction_ar}\n"
+                f"💵 سعر الدخول: {entry_price}\n"
+                f"🏁 سعر انتهاء الصفقة: {result_close}\n"
+                f"⏱️ مدة الإشارة: 3 دقائق\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📝 النتيجة:\n"
+                f"{result_text}\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📊 الإحصائيات حتى الآن\n"
+                f"🟢 ناجحة: {w}\n"
+                f"🔴 خاسرة: {l}\n"
+                f"🟡 تعادل: {d}\n"
+                f"📈 نسبة النجاح: {rate:.1f}%\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"🎯 تجريبي فقط\n"
+                f"🚫 لا توجد صفقات تلقائية"
+            )
+
+            send_telegram(
+                result_message
             )
 
             print(
-                f"RESULT {symbol} {direction}: "
+                f"RESULT {symbol} "
+                f"{direction}: "
                 f"{result} | "
-                f"entry={entry} | "
+                f"entry={entry_price} | "
                 f"close={result_close}"
             )
 
     except Exception as e:
-        print("Result check error:", e)
+
+        print(
+            "Result check error:",
+            e
+        )
+
+        traceback.print_exc()
 
 
 # =========================================================
@@ -323,16 +617,17 @@ def success_text():
     w, l, d, rate = store.stats()
 
     if w + l == 0:
+
         return (
-            "📊 SUCCESS RATE: "
+            "📊 نسبة النجاح: "
             "لا توجد نتائج مكتملة بعد"
         )
 
     return (
-        f"📊 SUCCESS RATE: {rate:.1f}%\n"
-        f"🟢 WINS: {w}\n"
-        f"🔴 LOSSES: {l}\n"
-        f"🟡 DRAWS: {d}"
+        f"📊 نسبة النجاح: {rate:.1f}%\n"
+        f"🟢 ناجحة: {w}\n"
+        f"🔴 خاسرة: {l}\n"
+        f"🟡 تعادل: {d}"
     )
 
 
@@ -348,41 +643,59 @@ def build_message(
 ):
 
     if s["direction"] == "CALL":
-        title = "🟢 GREEN CALL - BUY"
-        level = "LOWER DONCHIAN"
-    else:
-        title = "🔴 RED PUT - SELL"
-        level = "UPPER DONCHIAN"
 
-    rsi = s.get("rsi")
-    stoch_k = s.get("stoch_k")
-    stoch_d = s.get("stoch_d")
+        title = "🟢 إشارة شراء — CALL"
+        level = "📍 الحد السفلي لدونشيان"
+        direction_text = "شراء"
+
+    else:
+
+        title = "🔴 إشارة بيع — PUT"
+        level = "📍 الحد العلوي لدونشيان"
+        direction_text = "بيع"
+
+    rsi = s.get(
+        "rsi",
+        "غير متوفر"
+    )
+
+    stoch_k = s.get(
+        "stoch_k",
+        "غير متوفر"
+    )
+
+    stoch_d = s.get(
+        "stoch_d",
+        "غير متوفر"
+    )
+
     reason = s.get(
         "reason",
-        "انعكاس مؤكد"
+        "انعكاس مؤكد حسب شروط الاستراتيجية"
     )
 
     message = (
         f"{title}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"📊 PAIR: {display_name}\n"
-        f"📍 {level}\n"
-        f"💰 PAYOUT: {payout:.0f}%\n"
-        f"⏱ TIMEFRAME: M1\n"
-        f"⌛ EXPIRY: 3 MINUTES\n"
-        f"💵 ENTRY: {entry}\n"
+        f"📊 الزوج: {display_name}\n"
+        f"📌 الاتجاه: {direction_text}\n"
+        f"{level}\n"
+        f"💰 نسبة العائد: {payout:.0f}%\n"
+        f"⏱️ الإطار: M1\n"
+        f"⌛ مدة الإشارة: 3 دقائق\n"
+        f"💵 سعر الدخول: {entry}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"🧠 REASON:\n"
+        f"🧠 سبب الإشارة:\n"
         f"{reason}\n"
         f"━━━━━━━━━━━━━━\n"
         f"📈 RSI 14: {rsi}\n"
-        f"📊 Stoch K: {stoch_k}\n"
-        f"📊 Stoch D: {stoch_d}\n"
+        f"📊 Stochastic K: {stoch_k}\n"
+        f"📊 Stochastic D: {stoch_d}\n"
         f"━━━━━━━━━━━━━━\n"
         f"{success_text()}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"🎯 DEMO ONLY\n"
-        f"🚫 NO AUTOMATIC TRADES"
+        f"🎯 تجريبي فقط\n"
+        f"🚫 لا توجد صفقات تلقائية"
     )
 
     return message
@@ -419,9 +732,6 @@ def process_pair(
 
     # -----------------------------------------------------
     # PAYOUT FILTER
-    # IMPORTANT:
-    # Pair is NOT removed if payout is low.
-    # It remains monitored and can return later.
     # -----------------------------------------------------
 
     if payout < MIN_OTC_PAYOUT:
@@ -468,8 +778,12 @@ def process_pair(
 
         return False
 
-    # Prevent duplicate signal
+    # -----------------------------------------------------
+    # PREVENT DUPLICATE SIGNAL
+    # -----------------------------------------------------
+
     if seen_candles.get(symbol) == candle_id:
+
         return False
 
     # -----------------------------------------------------
@@ -479,7 +793,9 @@ def process_pair(
 
     try:
 
-        result = signal(closed)
+        result = signal(
+            closed
+        )
 
     except Exception as e:
 
@@ -527,20 +843,12 @@ def process_pair(
 
         candle_time = candle["time"]
 
-        if hasattr(
-            candle_time,
-            "timestamp"
-        ):
+        candle_timestamp = candle_timestamp(
+            candle_time
+        )
 
-            candle_timestamp = (
-                candle_time.timestamp()
-            )
-
-        else:
-
-            candle_timestamp = float(
-                candle_time
-            )
+        if candle_timestamp is None:
+            return False
 
         expiry = (
             candle_timestamp
@@ -559,7 +867,9 @@ def process_pair(
     # SAVE SIGNAL
     # -----------------------------------------------------
 
-    signal_data = dict(result)
+    signal_data = dict(
+        result
+    )
 
     signal_data.update(
         {
@@ -572,7 +882,9 @@ def process_pair(
 
     try:
 
-        store.add(signal_data)
+        store.add(
+            signal_data
+        )
 
     except Exception as e:
 
@@ -596,7 +908,9 @@ def process_pair(
         payout
     )
 
-    if not send_telegram(message):
+    if not send_telegram(
+        message
+    ):
 
         print(
             f"{display_name}: "
@@ -625,26 +939,29 @@ def process_pair(
 def send_start_message():
 
     message = (
-        "🤖 OTC SIGNAL BOT STARTED\n"
+        "🤖 تم تشغيل بوت إشارات OTC\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "📊 47 OTC PAIRS\n"
-        "⏱ M1\n"
-        "⌛ 3 MIN EXPIRY\n"
-        "💰 MIN PAYOUT: 80%\n"
-        "🎯 MAX SIGNALS: 20/DAY\n"
+        "📊 عدد الأزواج: 47 زوج OTC\n"
+        "⏱️ الإطار الزمني: M1\n"
+        "⌛ مدة الإشارة: 3 دقائق\n"
+        "💰 أقل عائد: 80%\n"
+        "🎯 الحد الأقصى: 20 إشارة يوميًا\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🧠 REVERSAL STRATEGY\n"
+        "🧠 استراتيجية الانعكاس\n"
         "📈 Donchian 20\n"
         "📉 RSI 14\n"
-        "🕯️ Rejection Candle\n"
+        "🕯️ شمعة رفض\n"
         "📊 Stochastic 5,3,3\n"
         "📉 EMA 50\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🎯 DEMO ONLY\n"
-        "🚫 NO AUTOMATIC TRADES"
+        "📌 البوت يرسل إشارات فقط\n"
+        "🎯 تجريبي فقط\n"
+        "🚫 لا توجد صفقات تلقائية"
     )
 
-    send_telegram(message)
+    send_telegram(
+        message
+    )
 
 
 # =========================================================
@@ -653,30 +970,52 @@ def send_start_message():
 
 def main():
 
-    print("======================================")
-    print("OTC SIGNAL BOT STARTING")
-    print("DEMO ONLY - NO AUTOMATIC TRADES")
-    print("======================================")
+    print(
+        "======================================"
+    )
+
+    print(
+        "OTC SIGNAL BOT STARTING"
+    )
+
+    print(
+        "DEMO ONLY - NO AUTOMATIC TRADES"
+    )
+
+    print(
+        "======================================"
+    )
 
     if not SSID:
-        print("ERROR: PO_SSID is missing")
+
+        print(
+            "ERROR: PO_SSID is missing"
+        )
+
         return
 
     if not TOKEN:
+
         print(
             "ERROR: "
             "TELEGRAM_BOT_TOKEN is missing"
         )
+
         return
 
     if not CHAT:
+
         print(
             "ERROR: "
             "TELEGRAM_CHAT_ID is missing"
         )
+
         return
 
-    # Make sure database exists
+    # -----------------------------------------------------
+    # DATABASE
+    # -----------------------------------------------------
+
     store.db().close()
 
     print(
@@ -697,7 +1036,9 @@ def main():
             # CONNECTION
             # =============================================
 
-            if not feed_connected(feed):
+            if not feed_connected(
+                feed
+            ):
 
                 print(
                     "Pocket Option is not connected."
@@ -719,7 +1060,9 @@ def main():
                         "Retrying in 15 seconds..."
                     )
 
-                    time.sleep(15)
+                    time.sleep(
+                        15
+                    )
 
                     continue
 
@@ -733,13 +1076,17 @@ def main():
             # CHECK PENDING RESULTS
             # =============================================
 
-            check_pending(feed)
+            check_pending(
+                feed
+            )
 
             # =============================================
             # DAILY LIMIT
             # =============================================
 
-            current_count = store.today_count()
+            current_count = (
+                store.today_count()
+            )
 
             print(
                 f"Today's signals: "
@@ -756,7 +1103,9 @@ def main():
                     "Daily signal limit reached."
                 )
 
-                time.sleep(60)
+                time.sleep(
+                    60
+                )
 
                 continue
 
@@ -773,9 +1122,12 @@ def main():
                     store.today_count()
                     >= MAX_SIGNALS_PER_DAY
                 ):
+
                     break
 
-                if not feed_connected(feed):
+                if not feed_connected(
+                    feed
+                ):
 
                     print(
                         "Connection lost "
@@ -858,7 +1210,9 @@ def main():
                 "in 15 seconds..."
             )
 
-            time.sleep(15)
+            time.sleep(
+                15
+            )
 
 
 # =========================================================
