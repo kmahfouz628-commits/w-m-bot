@@ -25,6 +25,12 @@ EXPIRY_MINUTES = 3
 
 LOCK_FILE = "/tmp/otc_signal_bot.lock"
 
+# لمنع تكرار نفس رسالة انتظار شمعة الانتهاء
+pending_wait_log = {}
+
+# رقم عملية التشغيل الحالية
+PROCESS_ID = os.getpid()
+
 OTC_PAIRS = [
     ("AEDCNY_otc", "🇦🇪/🇨🇳 AED/CNY OTC"),
     ("AUDCAD_otc", "🇦🇺/🇨🇦 AUD/CAD OTC"),
@@ -72,7 +78,7 @@ OTC_PAIRS = [
     ("USDTHB_otc", "🇺🇸/🇹🇭 USD/THB OTC"),
     ("USDVND_otc", "🇺🇸/🇻🇳 USD/VND OTC"),
     ("YERUSD_otc", "🇾🇪/🇺🇸 YER/USD OTC"),
-    ("ZARUSD_otc", "🇿🇦/🇿🇦 ZAR/USD OTC"),
+    ("ZARUSD_otc", "🇿🇦/🇺🇸 ZAR/USD OTC"),
 ]
 
 seen_candles = {}
@@ -89,12 +95,14 @@ def acquire_lock():
 
             print("⚠️ نسخة أخرى من البوت تعمل بالفعل.")
             print(f"PID الموجود: {old_pid}")
+            print(f"PID الحالي: {PROCESS_ID}")
             return False
 
         with open(LOCK_FILE, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
+            f.write(str(PROCESS_ID))
 
         print("تم تفعيل حماية التشغيل الفردي.")
+        print(f"PID التشغيل الحالي: {PROCESS_ID}")
         return True
 
     except Exception as e:
@@ -155,12 +163,18 @@ def connect_feed():
         return None
 
     try:
-        print("Connecting to Pocket Option...")
+        print(
+            f"Connecting to Pocket Option... "
+            f"[PID {PROCESS_ID}]"
+        )
 
         feed = PocketOptionFeed(SSID)
 
         if feed.connect():
-            print("Pocket Option connected successfully")
+            print(
+                "Pocket Option connected successfully "
+                f"[PID {PROCESS_ID}]"
+            )
             return feed
 
         print("Pocket Option connection failed")
@@ -233,6 +247,21 @@ def get_display_name(symbol):
             return display_name
 
     return symbol.replace("_otc", " OTC")
+
+
+def log_pending_wait(symbol, row_id):
+    """
+    يطبع رسالة الانتظار مرة واحدة فقط لكل إشارة معلقة
+    بدل تكرارها في كل دورة.
+    """
+    key = f"{row_id}:{symbol}"
+
+    if key not in pending_wait_log:
+        pending_wait_log[key] = time.time()
+        print(
+            f"في انتظار شمعة انتهاء الصلاحية "
+            f"{symbol} [signal_id={row_id}]"
+        )
 
 
 def check_pending(feed):
@@ -316,8 +345,14 @@ def check_pending(feed):
                     best_candle = candidates[-1][1]
 
             if best_candle is None:
-                print(f"Waiting for expiry candle {symbol}")
+                log_pending_wait(symbol, row_id)
                 continue
+
+            # تم العثور على الشمعة، لذلك نحذف علامة الانتظار
+            pending_wait_log.pop(
+                f"{row_id}:{symbol}",
+                None
+            )
 
             try:
                 result_close = float(best_candle["close"])
@@ -347,17 +382,30 @@ def check_pending(feed):
 
             if result == "WIN":
                 result_title = "✅ نجحت — WIN"
-                result_text = "الإشارة حققت النتيجة الصحيحة بعد انتهاء 3 دقائق."
+                result_text = (
+                    "الإشارة حققت النتيجة الصحيحة "
+                    "بعد انتهاء 3 دقائق."
+                )
 
             elif result == "LOSS":
                 result_title = "❌ خسرت — LOSS"
-                result_text = "الإشارة لم تحقق النتيجة المتوقعة بعد انتهاء 3 دقائق."
+                result_text = (
+                    "الإشارة لم تحقق النتيجة المتوقعة "
+                    "بعد انتهاء 3 دقائق."
+                )
 
             else:
                 result_title = "🟡 تعادل — DRAW"
-                result_text = "سعر الدخول وسعر النهاية كانا متساويين."
+                result_text = (
+                    "سعر الدخول وسعر النهاية "
+                    "كانا متساويين."
+                )
 
-            direction_ar = "🟢 شراء" if direction == "CALL" else "🔴 بيع"
+            direction_ar = (
+                "🟢 شراء"
+                if direction == "CALL"
+                else "🔴 بيع"
+            )
 
             result_message = (
                 f"{result_title}\n"
@@ -385,7 +433,10 @@ def check_pending(feed):
 
             print(
                 f"RESULT {symbol} {direction}: "
-                f"{result} | entry={entry_price} | close={result_close}"
+                f"{result} | "
+                f"entry={entry_price} | "
+                f"close={result_close} | "
+                f"PID={PROCESS_ID}"
             )
 
     except Exception as e:
@@ -564,7 +615,8 @@ def process_pair(feed, symbol, display_name):
     print(
         f"*** SIGNAL {direction} "
         f"{display_name} "
-        f"payout={payout:.0f}% ***"
+        f"payout={payout:.0f}% "
+        f"PID={PROCESS_ID} ***"
     )
 
     return True
@@ -587,6 +639,8 @@ def send_start_message():
         "📊 Stochastic 5,3,3\n"
         "📉 EMA 50\n"
         "━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 PID: {PROCESS_ID}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
         "📌 البوت يرسل إشارات فقط\n"
         "🎯 تجريبي فقط\n"
         "🚫 لا توجد صفقات تلقائية"
@@ -599,6 +653,7 @@ def main():
     print("======================================")
     print("بدء تشغيل بوت إشارات OTC")
     print("تجريبي فقط - لا توجد صفقات تلقائية")
+    print(f"PID التشغيل: {PROCESS_ID}")
     print("======================================")
 
     if not SSID:
@@ -634,7 +689,8 @@ def main():
                 if not feed_connected(feed):
 
                     print(
-                        "Pocket Option غير متصل."
+                        f"⚠️ Pocket Option غير متصل "
+                        f"[PID {PROCESS_ID}]"
                     )
 
                     if feed is not None:
@@ -647,14 +703,18 @@ def main():
 
                     if feed is None:
                         print(
-                            "فشل الاتصال. "
+                            "❌ فشل الاتصال. "
                             "إعادة المحاولة بعد 15 ثانية..."
                         )
 
                         time.sleep(15)
                         continue
 
-                    print("تم استعادة الاتصال.")
+                    print(
+                        f"✅ تم استعادة الاتصال "
+                        f"[PID {PROCESS_ID}]"
+                    )
+
                     send_start_message()
 
                 check_pending(feed)
@@ -687,7 +747,8 @@ def main():
 
                     if not feed_connected(feed):
                         print(
-                            "انقطع الاتصال أثناء الفحص."
+                            f"⚠️ انقطع الاتصال أثناء الفحص "
+                            f"[PID {PROCESS_ID}]"
                         )
                         break
 
